@@ -16,7 +16,9 @@ const app = express();
 connectDB();
 
 // Middleware
-app.use(cors({ origin: 'http://localhost:3000' })); // Allow frontend origin
+app.use(cors({ 
+  origin: ['http://localhost:3000', 'https://9jabuka.vercel.app']
+}));
 app.use(express.json());
 app.use(fileUpload());
 
