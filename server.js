@@ -18,7 +18,7 @@ connectDB();
 
 // Middleware
 app.use(cors({ 
-  origin: ['http://localhost:3000', 'https://9jabuka.vercel.app']
+  origin: ['http://localhost:3000', 'https://9jabuka.vercel.app','http://order.9jabukarestaurant.com', 'https://order.9jabukarestaurant.com']
 }));
 app.use(express.json());
 app.use(fileUpload());
