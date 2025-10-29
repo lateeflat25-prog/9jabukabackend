@@ -82,7 +82,7 @@ router.post(
           
           // Validate each size
           for (const size of sizes) {
-            if (!['Half Pan', 'Full Pan', '2 Litres'].includes(size.name)) {
+            if (![ 'plate ','Half Pan', 'Full Pan', '2 Litres'].includes(size.name)) {
               return res.status(400).json({ message: `Invalid size name: ${size.name}` });
             }
             if (typeof size.price !== 'number' || size.price < 0) {
@@ -170,7 +170,7 @@ router.put(
           
           // Validate each size
           for (const size of sizes) {
-            if (!['Half Pan', 'Full Pan', '2 Litres'].includes(size.name)) {
+            if (!['plate ','Half Pan', 'Full Pan', '2 Litres'].includes(size.name)) {
               return res.status(400).json({ message: `Invalid size name: ${size.name}` });
             }
             if (typeof size.price !== 'number' || size.price < 0) {

@@ -12,7 +12,7 @@ const foodSchema = new mongoose.Schema({
   sizes: [{
     name: { 
       type: String, 
-      enum: ['Half Pan', 'Full Pan', '2 Litres'],
+      enum: ['plate ','Half Pan', 'Full Pan', '2 Litres'],
       required: true 
     },
     price: { 
