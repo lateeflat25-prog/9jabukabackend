@@ -162,7 +162,9 @@ router.get('/track/:referenceNumber', async (req, res) => {
 // Fetch all orders for admin
 router.get('/', async (req, res) => {
   try {
-    const orders = await Order.find().populate('items.food');
+    const orders = await Order.find()
+      .populate('items.food')
+      .sort({ createdAt: -1 }); // -1 for descending order (latest first)
     res.json(orders);
   } catch (error) {
     res.status(500).json({ message: 'Server error', error: error.message });
