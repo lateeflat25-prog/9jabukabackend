@@ -84,7 +84,6 @@ router.post(
   }
 );
 
-// Verify and place order after successful payment
 router.post(
   '/place',
   [
@@ -191,4 +190,66 @@ router.patch('/:id', async (req, res) => {
   }
 });
 
+
+// Add this to your routes file
+router.post(
+  '/webhook',
+  express.raw({ type: 'application/json' }),
+  async (req, res) => {
+    const sig = req.headers['stripe-signature'];
+    const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
+
+    let event;
+
+    try {
+      event = stripe.webhooks.constructEvent(req.body, sig, webhookSecret);
+    } catch (err) {
+      console.error('Webhook signature verification failed:', err.message);
+      return res.status(400).send(`Webhook Error: ${err.message}`);
+    }
+
+    // Handle the checkout.session.completed event
+    if (event.type === 'checkout.session.completed') {
+      const session = event.data.object;
+
+      // Extract metadata
+      const { mobileNumber, deliveryLocation, items } = session.metadata;
+      const parsedItems = JSON.parse(items);
+
+      // Validate food items
+      let totalAmount = 0;
+      for (const item of parsedItems) {
+        const food = await Food.findById(item.food);
+        if (!food) {
+          console.error(`Food item ${item.food} not found`);
+          continue;
+        }
+        totalAmount += food.price * item.quantity;
+      }
+
+      // Add delivery fee
+      totalAmount += 3.99;
+
+      // Generate unique reference number
+      const referenceNumber = nanoid(10);
+
+      // Create order
+      const order = new Order({
+        referenceNumber,
+        items: parsedItems,
+        totalAmount,
+        mobileNumber,
+        deliveryLocation,
+        status: 'pending',
+        paymentStatus: 'completed',
+        stripeSessionId: session.id,
+      });
+
+      await order.save();
+      console.log('Order created via webhook:', order);
+    }
+
+    res.json({ received: true });
+  }
+);
 module.exports = router;
