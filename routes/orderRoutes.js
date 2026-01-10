@@ -254,4 +254,34 @@ router.post(
     res.json({ received: true });
   }
 );
+
+// GET /api/orders/track-by-phone
+// GET /api/orders/track-by-phone-only
+router.get('/track-by-phone-only', async (req, res) => {
+  const { mobileNumber } = req.query;
+
+  if (!mobileNumber) {
+    return res.status(400).json({ message: 'Phone number is required' });
+  }
+
+  try {
+    // Find recent orders (last 7-30 days) for this phone to avoid showing very old ones
+    const orders = await Order.find({
+      mobileNumber: mobileNumber.trim(),
+      createdAt: { $gte: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000) } // last 30 days
+    })
+      .populate('items.food')
+      .sort({ createdAt: -1 }) // newest first
+      .limit(5); // show max 5 recent orders
+
+    if (orders.length === 0) {
+      return res.status(404).json({ message: 'No recent orders found for this number' });
+    }
+
+    res.json({ orders }); // return array since there could be multiple
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
 module.exports = router;
