@@ -8,6 +8,10 @@ const foodSchema = new mongoose.Schema({
   category: { type: String, required: true },
   cookingTime: { type: Number, required: true },
   imageUrl: { type: String, required: true },
+  isSoldOut: {
+    type: Boolean,
+    default: false
+  },
   // New: Optional sizes with individual prices
   sizes: [{
     name: { 
@@ -23,6 +27,7 @@ const foodSchema = new mongoose.Schema({
   }],
   // Flag to indicate if this food uses sizes
   hasSizes: { type: Boolean, default: false }
+
 }, { timestamps: true });
 
 module.exports = mongoose.model('Food', foodSchema);

@@ -127,12 +127,17 @@ router.put(
     body('description').optional().notEmpty().withMessage('Description cannot be empty'),
     body('price').optional().isFloat({ min: 0 }).withMessage('Price must be a positive number'),
     body('category').optional().notEmpty().withMessage('Category cannot be empty'),
-    body('cookingTime').optional().isInt({ min: 1 }).withMessage('Cooking time must be a positive integer')
+    body('cookingTime').optional().isInt({ min: 1 }).withMessage('Cooking time must be a positive integer'),
+    // NEW: optional boolean field (comes as string 'true'/'false' from FormData)
+    body('isSoldOut')
+      .optional()
+      .isIn(['true', 'false'])
+      .withMessage('isSoldOut must be "true" or "false"')
   ],
   async (req, res) => {
     console.log(`Received PUT /api/foods/${req.params.id}`);
     console.log('Request body:', req.body);
-    console.log('Request files:', req.files);
+    console.log('Request files:', req.files ? Object.keys(req.files) : 'no files');
 
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
@@ -145,108 +150,116 @@ router.put(
       const formData = req.body;
       const image = req.files?.image;
 
-      // Find the existing food item
+      // Find existing food
       const food = await Food.findById(foodId);
       if (!food) {
-        console.log('Food item not found:', foodId);
+        console.log('Food not found:', foodId);
         return res.status(404).json({ message: 'Food item not found' });
       }
 
-      // Parse sizes if provided (comes as JSON string from FormData)
+      // ── Sizes handling (your existing logic) ──
       let sizes = food.sizes || [];
       let hasSizes = food.hasSizes || false;
-      
+
       if (formData.sizes !== undefined) {
         try {
-          // Parse the sizes string to array
-          sizes = typeof formData.sizes === 'string' 
-            ? JSON.parse(formData.sizes) 
+          sizes = typeof formData.sizes === 'string'
+            ? JSON.parse(formData.sizes)
             : formData.sizes;
-          
-          // Validate parsed sizes
+
           if (!Array.isArray(sizes)) {
             return res.status(400).json({ message: 'Sizes must be an array' });
           }
-          
-          // Validate each size
+
           for (const size of sizes) {
-            if (!['plate ','Half Pan', 'Full Pan', '2 Litres'].includes(size.name)) {
+            if (!['plate ', 'Half Pan', 'Full Pan', '2 Litres'].includes(size.name)) {
               return res.status(400).json({ message: `Invalid size name: ${size.name}` });
             }
             if (typeof size.price !== 'number' || size.price < 0) {
               return res.status(400).json({ message: `Invalid price for size ${size.name}` });
             }
           }
-          
-          // Convert hasSizes string to boolean
+
           if (formData.hasSizes !== undefined) {
             hasSizes = formData.hasSizes === 'true' || formData.hasSizes === true;
           } else {
             hasSizes = sizes.length > 0;
           }
-          
-          console.log('Parsed sizes:', sizes);
-          console.log('Parsed hasSizes:', hasSizes);
+
+          console.log('→ Parsed sizes:', sizes);
+          console.log('→ Parsed hasSizes:', hasSizes);
         } catch (e) {
-          console.error('Error parsing sizes:', e);
+          console.error('Sizes parse error:', e);
           return res.status(400).json({ message: 'Invalid sizes format: ' + e.message });
         }
       }
 
-      // Prepare update object
+      // ── NEW: Sold Out handling ──
+      let isSoldOut = food.isSoldOut || false; // default to existing value
+
+      if (formData.isSoldOut !== undefined) {
+        isSoldOut = formData.isSoldOut === 'true' || formData.isSoldOut === true;
+        console.log('→ isSoldOut updated to:', isSoldOut);
+      }
+
+      // Prepare fields to update
       const updateData = {
-        name: formData.name || food.name,
-        description: formData.description || food.description,
-        price: formData.price ? parseFloat(formData.price) : food.price,
-        category: formData.category || food.category,
-        cookingTime: formData.cookingTime ? parseInt(formData.cookingTime) : food.cookingTime,
-        hasSizes: hasSizes,
-        sizes: sizes
+        name: formData.name !== undefined ? formData.name : food.name,
+        description: formData.description !== undefined ? formData.description : food.description,
+        price: formData.price !== undefined ? parseFloat(formData.price) : food.price,
+        category: formData.category !== undefined ? formData.category : food.category,
+        cookingTime: formData.cookingTime !== undefined ? parseInt(formData.cookingTime) : food.cookingTime,
+        hasSizes,
+        sizes,
+        isSoldOut,           // ← added here
       };
 
-      // Handle image update if provided
+      // Image handling (unchanged)
       if (image) {
         const filetypes = /jpeg|jpg|png/;
         if (!filetypes.test(image.mimetype)) {
-          console.log('Invalid image type:', image.mimetype);
-          return res.status(400).json({ message: 'Images only (jpeg, jpg, png)' });
+          return res.status(400).json({ message: 'Only jpeg, jpg, png allowed' });
         }
 
-        console.log('Uploading new image to Cloudinary:', image.name);
+        console.log('Uploading image to Cloudinary:', image.name);
+
         const result = await new Promise((resolve, reject) => {
           cloudinary.uploader.upload_stream(
             { folder: 'food_ordering' },
-            (error, result) => {
-              if (error) {
-                console.error('Cloudinary upload error:', error);
-                reject(error);
-              } else {
-                console.log('Cloudinary upload successful:', result.secure_url);
-                resolve(result);
-              }
-            }
+            (error, result) => error ? reject(error) : resolve(result)
           ).end(image.data);
         });
 
-        // Delete old image from Cloudinary if it exists
+        // Delete old image if exists
         if (food.imageUrl) {
           const publicId = food.imageUrl.split('/').pop().split('.')[0];
-          console.log('Deleting old image from Cloudinary:', publicId);
+          console.log('Deleting old Cloudinary image:', publicId);
           await cloudinary.uploader.destroy(`food_ordering/${publicId}`);
         }
 
         updateData.imageUrl = result.secure_url;
       }
 
-      // Update food item in the database
-      console.log('Updating food item in database with data:', updateData);
-      const updatedFood = await Food.findByIdAndUpdate(foodId, updateData, { new: true });
+      console.log('Final update object:', updateData);
 
-      console.log('Food item updated successfully:', updatedFood);
-      res.status(200).json({ message: 'Food item updated successfully', food: updatedFood });
+      const updatedFood = await Food.findByIdAndUpdate(
+        foodId,
+        updateData,
+        { new: true, runValidators: true }
+      );
+
+      console.log('Food updated successfully:', updatedFood._id);
+
+      res.status(200).json({
+        message: 'Food item updated successfully',
+        food: updatedFood
+      });
     } catch (error) {
-      console.error('Error updating food item:', error);
-      res.status(500).json({ message: 'Server error', error: error.message });
+      console.error('Update error:', error);
+      res.status(500).json({
+        message: 'Server error while updating food',
+        error: error.message
+      });
     }
   }
 );
