@@ -1,5 +1,3 @@
-
-
 const express = require('express');
 const router = express.Router();
 const Order = require('../models/order');
@@ -8,6 +6,20 @@ const { body, validationResult } = require('express-validator');
 const nanoid = require('nanoid').nanoid;
 const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 console.log('Stripe Secret Key:', process.env.STRIPE_SECRET_KEY);
+
+// ─── Sanitize strings for Stripe (removes non-Latin1 chars that crash btoa) ──
+const sanitizeForStripe = (str) => {
+  if (!str) return '';
+  return String(str)
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')   // strip combining diacritics
+    .replace(/[\u2018\u2019]/g, "'")   // curly single quotes
+    .replace(/[\u201C\u201D]/g, '"')   // curly double quotes
+    .replace(/[\u2013\u2014]/g, '-')   // en/em dashes
+    .replace(/[\u2026]/g, '...')       // ellipsis
+    .replace(/[^\x00-\xFF]/g, '')      // strip anything else outside Latin1
+    .trim();
+};
 
 // Create Stripe Checkout session
 router.post(
@@ -28,7 +40,7 @@ router.post(
     try {
       const { items, mobileNumber, deliveryLocation } = req.body;
 
-      // Validate food items and calculate total
+      // Validate food items and build line items
       const lineItems = [];
       let totalAmount = 0;
       for (const item of items) {
@@ -40,24 +52,23 @@ router.post(
           price_data: {
             currency: 'usd',
             product_data: {
-              name: food.name,
-              description: food.description,
+              // ← sanitize here — this is what was crashing btoa in Stripe.js
+              name: sanitizeForStripe(food.name),
+              description: sanitizeForStripe(food.description),
             },
-            unit_amount: Math.round(food.price * 100), // Convert to cents
+            unit_amount: Math.round(food.price * 100),
           },
           quantity: item.quantity,
         });
         totalAmount += food.price * item.quantity;
       }
 
-      // Add delivery fee
+      // Add delivery fee line item
       lineItems.push({
         price_data: {
           currency: 'usd',
-          product_data: {
-            name: 'Delivery Fee',
-          },
-          unit_amount: 399, // $3.99 in cents
+          product_data: { name: 'Delivery Fee' },
+          unit_amount: 399,
         },
         quantity: 1,
       });
@@ -70,13 +81,15 @@ router.post(
         success_url: `${process.env.CLIENT_URL}/pages/success?session_id={CHECKOUT_SESSION_ID}`,
         cancel_url: `${process.env.CLIENT_URL}/`,
         metadata: {
-          mobileNumber,
-          deliveryLocation,
+          mobileNumber: sanitizeForStripe(mobileNumber),
+          deliveryLocation: sanitizeForStripe(deliveryLocation),
           items: JSON.stringify(items),
         },
       });
 
-      res.json({ id: session.id });
+      // ← Return the URL, not just the ID — frontend redirects with window.location.href
+      //   This avoids the btoa crash in Stripe.js redirectToCheckout()
+      res.json({ url: session.url, id: session.id });
     } catch (error) {
       console.error('Error creating checkout session:', error);
       res.status(500).json({ message: 'Server error', error: error.message });
@@ -98,7 +111,6 @@ router.post(
     try {
       const { sessionId } = req.body;
 
-      // Verify Stripe Checkout session
       const session = await stripe.checkout.sessions.retrieve(sessionId);
       if (session.payment_status !== 'paid') {
         return res.status(400).json({ message: 'Payment not completed' });
@@ -107,7 +119,6 @@ router.post(
       const { mobileNumber, deliveryLocation, items } = session.metadata;
       const parsedItems = JSON.parse(items);
 
-      // Validate food items
       let totalAmount = 0;
       for (const item of parsedItems) {
         const food = await Food.findById(item.food);
@@ -117,13 +128,10 @@ router.post(
         totalAmount += food.price * item.quantity;
       }
 
-      // Add delivery fee
       totalAmount += 3.99;
 
-      // Generate unique reference number
       const referenceNumber = nanoid(10);
 
-      // Create order
       const order = new Order({
         referenceNumber,
         items: parsedItems,
@@ -147,12 +155,8 @@ router.post(
 // Track order by reference number
 router.get('/track/:referenceNumber', async (req, res) => {
   try {
-    const order = await Order.findOne({ referenceNumber: req.params.referenceNumber }).populate(
-      'items.food'
-    );
-    if (!order) {
-      return res.status(404).json({ message: 'Order not found' });
-    }
+    const order = await Order.findOne({ referenceNumber: req.params.referenceNumber }).populate('items.food');
+    if (!order) return res.status(404).json({ message: 'Order not found' });
     res.json(order);
   } catch (error) {
     res.status(500).json({ message: 'Server error', error: error.message });
@@ -162,9 +166,7 @@ router.get('/track/:referenceNumber', async (req, res) => {
 // Fetch all orders for admin
 router.get('/', async (req, res) => {
   try {
-    const orders = await Order.find()
-      .populate('items.food')
-      .sort({ createdAt: -1 }); // -1 for descending order (latest first)
+    const orders = await Order.find().populate('items.food').sort({ createdAt: -1 });
     res.json(orders);
   } catch (error) {
     res.status(500).json({ message: 'Server error', error: error.message });
@@ -178,22 +180,15 @@ router.patch('/:id', async (req, res) => {
     if (!['pending', 'accepted', 'rejected'].includes(status)) {
       return res.status(400).json({ message: 'Invalid status' });
     }
-    const order = await Order.findByIdAndUpdate(
-      req.params.id,
-      { status },
-      { new: true }
-    ).populate('items.food');
-    if (!order) {
-      return res.status(404).json({ message: 'Order not found' });
-    }
+    const order = await Order.findByIdAndUpdate(req.params.id, { status }, { new: true }).populate('items.food');
+    if (!order) return res.status(404).json({ message: 'Order not found' });
     res.json(order);
   } catch (error) {
     res.status(500).json({ message: 'Server error', error: error.message });
   }
 });
 
-
-// Add this to your routes file
+// Stripe webhook
 router.post(
   '/webhook',
   express.raw({ type: 'application/json' }),
@@ -202,7 +197,6 @@ router.post(
     const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
 
     let event;
-
     try {
       event = stripe.webhooks.constructEvent(req.body, sig, webhookSecret);
     } catch (err) {
@@ -210,32 +204,20 @@ router.post(
       return res.status(400).send(`Webhook Error: ${err.message}`);
     }
 
-    // Handle the checkout.session.completed event
     if (event.type === 'checkout.session.completed') {
       const session = event.data.object;
-
-      // Extract metadata
       const { mobileNumber, deliveryLocation, items } = session.metadata;
       const parsedItems = JSON.parse(items);
 
-      // Validate food items
       let totalAmount = 0;
       for (const item of parsedItems) {
         const food = await Food.findById(item.food);
-        if (!food) {
-          console.error(`Food item ${item.food} not found`);
-          continue;
-        }
+        if (!food) { console.error(`Food item ${item.food} not found`); continue; }
         totalAmount += food.price * item.quantity;
       }
-
-      // Add delivery fee
       totalAmount += 3.99;
 
-      // Generate unique reference number
       const referenceNumber = nanoid(10);
-
-      // Create order
       const order = new Order({
         referenceNumber,
         items: parsedItems,
@@ -255,33 +237,26 @@ router.post(
   }
 );
 
-// GET /api/orders/track-by-phone
-// GET /api/orders/track-by-phone-only
+// Track orders by phone number
 router.get('/track-by-phone-only', async (req, res) => {
   const { mobileNumber } = req.query;
-
-  if (!mobileNumber) {
-    return res.status(400).json({ message: 'Phone number is required' });
-  }
+  if (!mobileNumber) return res.status(400).json({ message: 'Phone number is required' });
 
   try {
-    // Find recent orders (last 7-30 days) for this phone to avoid showing very old ones
     const orders = await Order.find({
       mobileNumber: mobileNumber.trim(),
-      createdAt: { $gte: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000) } // last 30 days
+      createdAt: { $gte: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000) },
     })
       .populate('items.food')
-      .sort({ createdAt: -1 }) // newest first
-      .limit(5); // show max 5 recent orders
+      .sort({ createdAt: -1 })
+      .limit(5);
 
-    if (orders.length === 0) {
-      return res.status(404).json({ message: 'No recent orders found for this number' });
-    }
-
-    res.json({ orders }); // return array since there could be multiple
+    if (orders.length === 0) return res.status(404).json({ message: 'No recent orders found for this number' });
+    res.json({ orders });
   } catch (error) {
     console.error(error);
     res.status(500).json({ message: 'Server error' });
   }
 });
+
 module.exports = router;
