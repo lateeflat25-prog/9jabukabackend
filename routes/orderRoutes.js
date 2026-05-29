@@ -97,24 +97,25 @@ router.post(
   }
 );
 
-router.post(
-  '/place',
-  [
-    body('sessionId').notEmpty().withMessage('Stripe session ID is required'),
-  ],
-  async (req, res) => {
-    const errors = validationResult(req);
-    if (!errors.isEmpty()) {
-      return res.status(400).json({ errors: errors.array() });
+router.post('/place', [
+  body('sessionId').notEmpty().withMessage('Stripe session ID is required'),
+], async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) return res.status(400).json({ errors: errors.array() });
+
+  try {
+    const { sessionId } = req.body;
+
+    // ← Prevent duplicate: return existing order if already created
+    const existingOrder = await Order.findOne({ stripeSessionId: sessionId });
+    if (existingOrder) {
+      return res.status(200).json({ message: 'Order already placed', order: existingOrder });
     }
 
-    try {
-      const { sessionId } = req.body;
-
-      const session = await stripe.checkout.sessions.retrieve(sessionId);
-      if (session.payment_status !== 'paid') {
-        return res.status(400).json({ message: 'Payment not completed' });
-      }
+    const session = await stripe.checkout.sessions.retrieve(sessionId);
+    if (session.payment_status !== 'paid') {
+      return res.status(400).json({ message: 'Payment not completed' });
+    }
 
       const { mobileNumber, deliveryLocation, items } = session.metadata;
       const parsedItems = JSON.parse(items);
@@ -177,9 +178,9 @@ router.get('/', async (req, res) => {
 router.patch('/:id', async (req, res) => {
   try {
     const { status } = req.body;
-    if (!['pending', 'accepted', 'rejected'].includes(status)) {
-      return res.status(400).json({ message: 'Invalid status' });
-    }
+   if (!['pending', 'accepted', 'rejected', 'completed'].includes(status)) { // ← add completed
+  return res.status(400).json({ message: 'Invalid status' });
+}
     const order = await Order.findByIdAndUpdate(req.params.id, { status }, { new: true }).populate('items.food');
     if (!order) return res.status(404).json({ message: 'Order not found' });
     res.json(order);
@@ -206,6 +207,11 @@ router.post(
 
     if (event.type === 'checkout.session.completed') {
       const session = event.data.object;
+        const existingOrder = await Order.findOne({ stripeSessionId: session.id });
+  if (existingOrder) {
+    console.log('Order already exists for session:', session.id);
+    return res.json({ received: true });
+  }
       const { mobileNumber, deliveryLocation, items } = session.metadata;
       const parsedItems = JSON.parse(items);
 

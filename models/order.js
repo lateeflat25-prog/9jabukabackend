@@ -12,7 +12,7 @@ const orderSchema = new mongoose.Schema({
   mobileNumber: { type: String, required: true },
   deliveryLocation: { type: String, required: true },
   paymentStatus: { type: String, default: 'pending' },
-  status: { type: String, default: 'pending', enum: ['pending', 'accepted', 'rejected'] },
+  status: { type: String, default: 'pending', enum: ['pending', 'accepted', 'rejected', 'completed'] },
   createdAt: { type: Date, default: Date.now },
 });
 
