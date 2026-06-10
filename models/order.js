@@ -12,6 +12,11 @@ const orderSchema = new mongoose.Schema({
   mobileNumber: { type: String, required: true },
   deliveryLocation: { type: String, required: true },
   paymentStatus: { type: String, default: 'pending' },
+  stripeSessionId: {
+  type: String,
+  unique: true,   // 👈 MongoDB will reject the second insert at the DB level
+  sparse: true,   // 👈 allows null/undefined for older orders
+},
   status: { type: String, default: 'pending', enum: ['pending', 'accepted', 'rejected', 'completed'] },
   createdAt: { type: Date, default: Date.now },
 });

@@ -97,62 +97,22 @@ router.post(
   }
 );
 
-router.post('/place', [
-  body('sessionId').notEmpty().withMessage('Stripe session ID is required'),
-], async (req, res) => {
-  const errors = validationResult(req);
-  if (!errors.isEmpty()) return res.status(400).json({ errors: errors.array() });
-
+// Just READS the order the webhook already created
+router.get('/by-session/:sessionId', async (req, res) => {
   try {
-    const { sessionId } = req.body;
-
-    // ← Prevent duplicate: return existing order if already created
-    const existingOrder = await Order.findOne({ stripeSessionId: sessionId });
-    if (existingOrder) {
-      return res.status(200).json({ message: 'Order already placed', order: existingOrder });
+    let order = null;
+    // Webhook might be slightly delayed, so try up to 5 times
+    for (let i = 0; i < 5; i++) {
+      order = await Order.findOne({ stripeSessionId: req.params.sessionId });
+      if (order) break;
+      await new Promise(r => setTimeout(r, 1500));
     }
-
-    const session = await stripe.checkout.sessions.retrieve(sessionId);
-    if (session.payment_status !== 'paid') {
-      return res.status(400).json({ message: 'Payment not completed' });
-    }
-
-      const { mobileNumber, deliveryLocation, items } = session.metadata;
-      const parsedItems = JSON.parse(items);
-
-      let totalAmount = 0;
-      for (const item of parsedItems) {
-        const food = await Food.findById(item.food);
-        if (!food) {
-          return res.status(404).json({ message: `Food item ${item.food} not found` });
-        }
-        totalAmount += food.price * item.quantity;
-      }
-
-      totalAmount += 3.99;
-
-      const referenceNumber = nanoid(10);
-
-      const order = new Order({
-        referenceNumber,
-        items: parsedItems,
-        totalAmount,
-        mobileNumber,
-        deliveryLocation,
-        status: 'pending',
-        paymentStatus: 'completed',
-        stripeSessionId: sessionId,
-      });
-
-      await order.save();
-      res.status(201).json({ message: 'Order placed successfully', order });
-    } catch (error) {
-      console.error('Error placing order:', error);
-      res.status(500).json({ message: 'Server error', error: error.message });
-    }
+    if (!order) return res.status(404).json({ message: 'Order not found' });
+    res.json({ order });
+  } catch (error) {
+    res.status(500).json({ message: 'Server error', error: error.message });
   }
-);
-
+});
 // Track order by reference number
 router.get('/track/:referenceNumber', async (req, res) => {
   try {
@@ -205,39 +165,41 @@ router.post(
       return res.status(400).send(`Webhook Error: ${err.message}`);
     }
 
-    if (event.type === 'checkout.session.completed') {
-      const session = event.data.object;
-        const existingOrder = await Order.findOne({ stripeSessionId: session.id });
-  if (existingOrder) {
-    console.log('Order already exists for session:', session.id);
-    return res.json({ received: true });
+if (event.type === 'checkout.session.completed') {
+  const session = event.data.object;
+  const { mobileNumber, deliveryLocation, items } = session.metadata;
+  const parsedItems = JSON.parse(items);
+
+  let totalAmount = 0;
+  for (const item of parsedItems) {
+    const food = await Food.findById(item.food);
+    if (!food) { console.error(`Food ${item.food} not found`); continue; }
+    totalAmount += food.price * item.quantity;
   }
-      const { mobileNumber, deliveryLocation, items } = session.metadata;
-      const parsedItems = JSON.parse(items);
+  totalAmount += 3.99;
 
-      let totalAmount = 0;
-      for (const item of parsedItems) {
-        const food = await Food.findById(item.food);
-        if (!food) { console.error(`Food item ${item.food} not found`); continue; }
-        totalAmount += food.price * item.quantity;
-      }
-      totalAmount += 3.99;
-
-      const referenceNumber = nanoid(10);
-      const order = new Order({
-        referenceNumber,
-        items: parsedItems,
-        totalAmount,
-        mobileNumber,
-        deliveryLocation,
-        status: 'pending',
-        paymentStatus: 'completed',
-        stripeSessionId: session.id,
-      });
-
-      await order.save();
-      console.log('Order created via webhook:', order);
+  try {
+    const order = new Order({
+      referenceNumber: nanoid(10),
+      items: parsedItems,
+      totalAmount,
+      mobileNumber,
+      deliveryLocation,
+      status: 'pending',
+      paymentStatus: 'completed',
+      stripeSessionId: session.id,  // unique index makes this safe
+    });
+    await order.save();
+    console.log('Order created via webhook:', order.referenceNumber);
+  } catch (err) {
+    if (err.code === 11000) {
+      // 👈 Duplicate key error = order already exists, totally fine
+      console.log('Duplicate webhook ignored for session:', session.id);
+    } else {
+      console.error('Error saving order:', err);
     }
+  }
+}
 
     res.json({ received: true });
   }
